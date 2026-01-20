@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "crates/kernels",
+  "crates/cli"
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+authors = ["NkvXness"]
+repository = "https://github.com/NkvXness/distance-kernels"
