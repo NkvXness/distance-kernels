@@ -233,7 +233,7 @@ mod tests {
         // dot = 32
         // ||a|| = sqrt(14)
         // ||b|| = sqrt(77)
-        // cosine = 32 / (sqrt(14) * sqrt(77)) ≈ 0.9746318
+        // cosine = 32 / (sqrt(14) * sqrt(77)) ~= 0.9746318
         let got = cosine_similarity_f32(&a, &b);
 
         assert_some_approx_eq(got, 0.9746318, 1e-6);
