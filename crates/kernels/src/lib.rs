@@ -1,3 +1,41 @@
+use std::error::Error;
+use std::fmt;
+
+pub type KernelResult<T> = Result<T, KernelError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelError {
+    LengthMismatch { left: usize, right: usize },
+    ZeroVector,
+    EmptyCandidates,
+}
+
+impl fmt::Display for KernelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LengthMismatch { left, right } => {
+                write!(f, "vectors must have equal length: {left} vs {right}")
+            }
+            Self::ZeroVector => write!(f, "operation is undefined for zero vectors"),
+            Self::EmptyCandidates => write!(f, "candidate set must not be empty"),
+        }
+    }
+}
+
+impl Error for KernelError {}
+
+#[inline]
+fn validate_equal_len(a: &[f32], b: &[f32]) -> KernelResult<()> {
+    if a.len() != b.len() {
+        return Err(KernelError::LengthMismatch {
+            left: a.len(),
+            right: b.len(),
+        });
+    }
+
+    Ok(())
+}
+
 #[inline]
 pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     // Preconditions: dot product only makes sense for equal-length vectors.
@@ -11,6 +49,12 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     }
 
     sum
+}
+
+#[inline]
+pub fn try_dot_f32(a: &[f32], b: &[f32]) -> KernelResult<f32> {
+    validate_equal_len(a, b)?;
+    Ok(dot_f32(a, b))
 }
 
 /// Computes squared Euclidean distance between two equal-length vectors.
@@ -34,6 +78,12 @@ pub fn l2_sq_f32(a: &[f32], b: &[f32]) -> f32 {
     sum
 }
 
+#[inline]
+pub fn try_l2_sq_f32(a: &[f32], b: &[f32]) -> KernelResult<f32> {
+    validate_equal_len(a, b)?;
+    Ok(l2_sq_f32(a, b))
+}
+
 /// Computes squared L2 norm of a vector.
 ///
 /// l2_norm_sq(a) = sum_i a[i]^2
@@ -49,6 +99,11 @@ pub fn l2_norm_sq_f32(a: &[f32]) -> f32 {
     }
 
     sum
+}
+
+#[inline]
+pub fn l2_norm_f32(a: &[f32]) -> f32 {
+    l2_norm_sq_f32(a).sqrt()
 }
 
 /// Computes cosine similarity between two equal-length vectors.
@@ -75,6 +130,45 @@ pub fn cosine_similarity_f32(a: &[f32], b: &[f32]) -> Option<f32> {
     Some(similarity)
 }
 
+#[inline]
+pub fn try_cosine_similarity_f32(a: &[f32], b: &[f32]) -> KernelResult<f32> {
+    validate_equal_len(a, b)?;
+    cosine_similarity_f32(a, b).ok_or(KernelError::ZeroVector)
+}
+
+pub fn normalize_l2_inplace_f32(values: &mut [f32]) -> KernelResult<()> {
+    let norm = l2_norm_f32(values);
+    if norm == 0.0 {
+        return Err(KernelError::ZeroVector);
+    }
+
+    for value in values {
+        *value /= norm;
+    }
+
+    Ok(())
+}
+
+pub fn normalized_l2_f32(values: &[f32]) -> KernelResult<Vec<f32>> {
+    let mut normalized = values.to_vec();
+    normalize_l2_inplace_f32(&mut normalized)?;
+    Ok(normalized)
+}
+
+pub fn nearest_l2_sq_f32(query: &[f32], candidates: &[&[f32]]) -> KernelResult<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+
+    for (index, candidate) in candidates.iter().enumerate() {
+        let distance = try_l2_sq_f32(query, candidate)?;
+        match best {
+            Some((_, best_distance)) if best_distance <= distance => {}
+            _ => best = Some((index, distance)),
+        }
+    }
+
+    best.ok_or(KernelError::EmptyCandidates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +182,13 @@ mod tests {
         assert!(
             approx_eq(value, expected, eps),
             "expected {expected}, got {value}"
+        );
+    }
+
+    fn assert_approx_eq(got: f32, expected: f32, eps: f32) {
+        assert!(
+            approx_eq(got, expected, eps),
+            "expected {expected}, got {got}"
         );
     }
 
@@ -114,6 +215,16 @@ mod tests {
         let a = [1.0, 2.0];
         let b = [1.0, 2.0, 3.0];
         let _ = dot_f32(&a, &b);
+    }
+
+    #[test]
+    fn try_dot_reports_different_lengths() {
+        let a = [1.0, 2.0];
+        let b = [1.0, 2.0, 3.0];
+
+        let got = try_dot_f32(&a, &b);
+
+        assert_eq!(got, Err(KernelError::LengthMismatch { left: 2, right: 3 }));
     }
 
     #[test]
@@ -196,6 +307,15 @@ mod tests {
     }
 
     #[test]
+    fn l2_norm_returns_square_root_of_norm_sq() {
+        let a = [3.0, 4.0];
+
+        let got = l2_norm_f32(&a);
+
+        assert_approx_eq(got, 5.0, 1e-6);
+    }
+
+    #[test]
     fn cosine_same_direction_is_one() {
         let a = [1.0, 0.0];
         let b = [2.0, 0.0];
@@ -250,11 +370,72 @@ mod tests {
     }
 
     #[test]
+    fn try_cosine_zero_vector_returns_error() {
+        let a = [0.0, 0.0];
+        let b = [1.0, 2.0];
+
+        let got = try_cosine_similarity_f32(&a, &b);
+
+        assert_eq!(got, Err(KernelError::ZeroVector));
+    }
+
+    #[test]
     #[should_panic]
     fn cosine_panics_on_different_lengths() {
         let a = [1.0, 2.0];
         let b = [1.0, 2.0, 3.0];
 
         let _ = cosine_similarity_f32(&a, &b);
+    }
+
+    #[test]
+    fn normalize_l2_inplace_scales_vector_to_unit_norm() {
+        let mut values = [3.0, 4.0];
+
+        normalize_l2_inplace_f32(&mut values).expect("normalization should succeed");
+
+        assert_approx_eq(values[0], 0.6, 1e-6);
+        assert_approx_eq(values[1], 0.8, 1e-6);
+        assert_approx_eq(l2_norm_f32(&values), 1.0, 1e-6);
+    }
+
+    #[test]
+    fn normalized_l2_returns_new_vector() {
+        let values = [0.0, 5.0];
+
+        let got = normalized_l2_f32(&values).expect("normalization should succeed");
+
+        assert_eq!(values, [0.0, 5.0]);
+        assert_approx_eq(got[0], 0.0, 1e-6);
+        assert_approx_eq(got[1], 1.0, 1e-6);
+    }
+
+    #[test]
+    fn normalize_l2_rejects_zero_vector() {
+        let mut values = [0.0, 0.0];
+
+        let got = normalize_l2_inplace_f32(&mut values);
+
+        assert_eq!(got, Err(KernelError::ZeroVector));
+    }
+
+    #[test]
+    fn nearest_l2_sq_returns_index_and_distance() {
+        let query = [1.0, 1.0];
+        let candidates: [&[f32]; 3] = [&[5.0, 5.0], &[2.0, 1.0], &[0.0, 0.0]];
+
+        let got = nearest_l2_sq_f32(&query, &candidates);
+
+        assert_eq!(got, Ok((1, 1.0)));
+    }
+
+    #[test]
+    fn nearest_l2_sq_rejects_empty_candidates() {
+        let query = [1.0, 1.0];
+        let candidates: [&[f32]; 0] = [];
+
+        let got = nearest_l2_sq_f32(&query, &candidates);
+
+        assert_eq!(got, Err(KernelError::EmptyCandidates));
     }
 }
