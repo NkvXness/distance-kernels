@@ -169,6 +169,17 @@ pub fn nearest_l2_sq_f32(query: &[f32], candidates: &[&[f32]]) -> KernelResult<(
     best.ok_or(KernelError::EmptyCandidates)
 }
 
+pub fn l2_sq_all_f32(query: &[f32], candidates: &[&[f32]]) -> KernelResult<Vec<f32>> {
+    if candidates.is_empty() {
+        return Err(KernelError::EmptyCandidates);
+    }
+
+    candidates
+        .iter()
+        .map(|candidate| try_l2_sq_f32(query, candidate))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +446,26 @@ mod tests {
         let candidates: [&[f32]; 0] = [];
 
         let got = nearest_l2_sq_f32(&query, &candidates);
+
+        assert_eq!(got, Err(KernelError::EmptyCandidates));
+    }
+
+    #[test]
+    fn l2_sq_all_returns_distances_for_each_candidate() {
+        let query = [1.0, 1.0];
+        let candidates: [&[f32]; 3] = [&[1.0, 1.0], &[2.0, 1.0], &[3.0, 3.0]];
+
+        let got = l2_sq_all_f32(&query, &candidates);
+
+        assert_eq!(got, Ok(vec![0.0, 1.0, 8.0]));
+    }
+
+    #[test]
+    fn l2_sq_all_rejects_empty_candidates() {
+        let query = [1.0, 1.0];
+        let candidates: [&[f32]; 0] = [];
+
+        let got = l2_sq_all_f32(&query, &candidates);
 
         assert_eq!(got, Err(KernelError::EmptyCandidates));
     }
