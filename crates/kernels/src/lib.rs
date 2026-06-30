@@ -8,6 +8,7 @@ pub enum KernelError {
     LengthMismatch { left: usize, right: usize },
     ZeroVector,
     EmptyCandidates,
+    InvalidK { k: usize, len: usize },
 }
 
 impl fmt::Display for KernelError {
@@ -18,6 +19,7 @@ impl fmt::Display for KernelError {
             }
             Self::ZeroVector => write!(f, "operation is undefined for zero vectors"),
             Self::EmptyCandidates => write!(f, "candidate set must not be empty"),
+            Self::InvalidK { k, len } => write!(f, "k must be in 1..={len}, got {k}"),
         }
     }
 }
@@ -178,6 +180,36 @@ pub fn l2_sq_all_f32(query: &[f32], candidates: &[&[f32]]) -> KernelResult<Vec<f
         .iter()
         .map(|candidate| try_l2_sq_f32(query, candidate))
         .collect()
+}
+
+pub fn nearest_k_l2_sq_f32(
+    query: &[f32],
+    candidates: &[&[f32]],
+    k: usize,
+) -> KernelResult<Vec<(usize, f32)>> {
+    if candidates.is_empty() {
+        return Err(KernelError::EmptyCandidates);
+    }
+    if k == 0 || k > candidates.len() {
+        return Err(KernelError::InvalidK {
+            k,
+            len: candidates.len(),
+        });
+    }
+
+    let mut scored = l2_sq_all_f32(query, candidates)?
+        .into_iter()
+        .enumerate()
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|left, right| {
+        left.1
+            .total_cmp(&right.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    scored.truncate(k);
+
+    Ok(scored)
 }
 
 #[cfg(test)]
@@ -468,5 +500,25 @@ mod tests {
         let got = l2_sq_all_f32(&query, &candidates);
 
         assert_eq!(got, Err(KernelError::EmptyCandidates));
+    }
+
+    #[test]
+    fn nearest_k_l2_sq_returns_sorted_neighbors() {
+        let query = [1.0, 1.0];
+        let candidates: [&[f32]; 4] = [&[5.0, 5.0], &[2.0, 1.0], &[1.0, 1.0], &[0.0, 0.0]];
+
+        let got = nearest_k_l2_sq_f32(&query, &candidates, 3);
+
+        assert_eq!(got, Ok(vec![(2, 0.0), (1, 1.0), (3, 2.0)]));
+    }
+
+    #[test]
+    fn nearest_k_l2_sq_rejects_zero_k() {
+        let query = [1.0, 1.0];
+        let candidates: [&[f32]; 1] = [&[1.0, 1.0]];
+
+        let got = nearest_k_l2_sq_f32(&query, &candidates, 0);
+
+        assert_eq!(got, Err(KernelError::InvalidK { k: 0, len: 1 }));
     }
 }
