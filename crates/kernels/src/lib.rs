@@ -212,6 +212,34 @@ pub fn nearest_k_l2_sq_f32(
     Ok(scored)
 }
 
+pub fn cosine_similarity_all_f32(query: &[f32], candidates: &[&[f32]]) -> KernelResult<Vec<f32>> {
+    if candidates.is_empty() {
+        return Err(KernelError::EmptyCandidates);
+    }
+
+    candidates
+        .iter()
+        .map(|candidate| try_cosine_similarity_f32(query, candidate))
+        .collect()
+}
+
+pub fn nearest_cosine_similarity_f32(
+    query: &[f32],
+    candidates: &[&[f32]],
+) -> KernelResult<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+
+    for (index, candidate) in candidates.iter().enumerate() {
+        let similarity = try_cosine_similarity_f32(query, candidate)?;
+        match best {
+            Some((_, best_similarity)) if best_similarity >= similarity => {}
+            _ => best = Some((index, similarity)),
+        }
+    }
+
+    best.ok_or(KernelError::EmptyCandidates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +548,38 @@ mod tests {
         let got = nearest_k_l2_sq_f32(&query, &candidates, 0);
 
         assert_eq!(got, Err(KernelError::InvalidK { k: 0, len: 1 }));
+    }
+
+    #[test]
+    fn cosine_similarity_all_returns_similarity_per_candidate() {
+        let query = [1.0, 0.0];
+        let candidates: [&[f32]; 3] = [&[1.0, 0.0], &[0.0, 1.0], &[-1.0, 0.0]];
+
+        let got =
+            cosine_similarity_all_f32(&query, &candidates).expect("cosine scoring should succeed");
+
+        assert_approx_eq(got[0], 1.0, 1e-6);
+        assert_approx_eq(got[1], 0.0, 1e-6);
+        assert_approx_eq(got[2], -1.0, 1e-6);
+    }
+
+    #[test]
+    fn nearest_cosine_similarity_returns_highest_similarity() {
+        let query = [1.0, 0.0];
+        let candidates: [&[f32]; 3] = [&[0.0, 1.0], &[0.5, 0.0], &[-1.0, 0.0]];
+
+        let got = nearest_cosine_similarity_f32(&query, &candidates);
+
+        assert_eq!(got, Ok((1, 1.0)));
+    }
+
+    #[test]
+    fn nearest_cosine_similarity_rejects_zero_candidate() {
+        let query = [1.0, 0.0];
+        let candidates: [&[f32]; 1] = [&[0.0, 0.0]];
+
+        let got = nearest_cosine_similarity_f32(&query, &candidates);
+
+        assert_eq!(got, Err(KernelError::ZeroVector));
     }
 }
