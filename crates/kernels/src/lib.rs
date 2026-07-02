@@ -9,6 +9,7 @@ pub enum KernelError {
     ZeroVector,
     EmptyCandidates,
     InvalidK { k: usize, len: usize },
+    LabelMismatch { samples: usize, labels: usize },
 }
 
 impl fmt::Display for KernelError {
@@ -20,6 +21,9 @@ impl fmt::Display for KernelError {
             Self::ZeroVector => write!(f, "operation is undefined for zero vectors"),
             Self::EmptyCandidates => write!(f, "candidate set must not be empty"),
             Self::InvalidK { k, len } => write!(f, "k must be in 1..={len}, got {k}"),
+            Self::LabelMismatch { samples, labels } => {
+                write!(f, "sample/label count mismatch: {samples} vs {labels}")
+            }
         }
     }
 }
@@ -238,6 +242,47 @@ pub fn nearest_cosine_similarity_f32(
     }
 
     best.ok_or(KernelError::EmptyCandidates)
+}
+
+pub fn knn_predict_l2_sq_u32(
+    query: &[f32],
+    samples: &[&[f32]],
+    labels: &[u32],
+    k: usize,
+) -> KernelResult<u32> {
+    if samples.len() != labels.len() {
+        return Err(KernelError::LabelMismatch {
+            samples: samples.len(),
+            labels: labels.len(),
+        });
+    }
+
+    let neighbors = nearest_k_l2_sq_f32(query, samples, k)?;
+    let mut votes: Vec<(u32, usize, f32)> = Vec::new();
+
+    for (sample_index, distance) in neighbors {
+        let label = labels[sample_index];
+        match votes
+            .iter_mut()
+            .find(|(seen_label, _, _)| *seen_label == label)
+        {
+            Some((_, count, distance_sum)) => {
+                *count += 1;
+                *distance_sum += distance;
+            }
+            None => votes.push((label, 1, distance)),
+        }
+    }
+
+    votes.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.2.total_cmp(&right.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    Ok(votes[0].0)
 }
 
 #[cfg(test)]
@@ -581,5 +626,44 @@ mod tests {
         let got = nearest_cosine_similarity_f32(&query, &candidates);
 
         assert_eq!(got, Err(KernelError::ZeroVector));
+    }
+
+    #[test]
+    fn knn_predict_l2_sq_returns_majority_label() {
+        let query = [1.0, 1.0];
+        let samples: [&[f32]; 4] = [&[1.0, 1.0], &[1.2, 1.1], &[8.0, 8.0], &[7.5, 8.0]];
+        let labels = [10, 10, 20, 20];
+
+        let got = knn_predict_l2_sq_u32(&query, &samples, &labels, 3);
+
+        assert_eq!(got, Ok(10));
+    }
+
+    #[test]
+    fn knn_predict_l2_sq_breaks_vote_ties_by_distance_sum() {
+        let query = [0.0, 0.0];
+        let samples: [&[f32]; 4] = [&[0.1, 0.0], &[2.0, 0.0], &[0.2, 0.0], &[3.0, 0.0]];
+        let labels = [1, 2, 2, 1];
+
+        let got = knn_predict_l2_sq_u32(&query, &samples, &labels, 4);
+
+        assert_eq!(got, Ok(2));
+    }
+
+    #[test]
+    fn knn_predict_l2_sq_rejects_label_mismatch() {
+        let query = [1.0, 1.0];
+        let samples: [&[f32]; 2] = [&[1.0, 1.0], &[2.0, 2.0]];
+        let labels = [10];
+
+        let got = knn_predict_l2_sq_u32(&query, &samples, &labels, 1);
+
+        assert_eq!(
+            got,
+            Err(KernelError::LabelMismatch {
+                samples: 2,
+                labels: 1
+            })
+        );
     }
 }
