@@ -1,5 +1,7 @@
 use kernels::{
-    cosine_similarity_f32, dot_f32, l2_norm_f32, l2_sq_f32, nearest_l2_sq_f32, normalized_l2_f32,
+    cosine_similarity_all_f32, cosine_similarity_f32, dot_f32, knn_predict_l2_sq_u32, l2_norm_f32,
+    l2_sq_all_f32, l2_sq_f32, nearest_cosine_similarity_f32, nearest_k_l2_sq_f32,
+    nearest_l2_sq_f32, normalized_l2_f32,
 };
 
 fn main() {
@@ -25,7 +27,12 @@ fn run(args: Vec<String>) -> Result<String, String> {
         "cosine" => run_cosine(&args),
         "norm" => run_norm(&args),
         "normalize" => run_normalize(&args),
+        "l2-sq-all" => run_l2_sq_all(&args),
         "nearest-l2-sq" => run_nearest_l2_sq(&args),
+        "nearest-k-l2-sq" => run_nearest_k_l2_sq(&args),
+        "cosine-all" => run_cosine_all(&args),
+        "nearest-cosine" => run_nearest_cosine(&args),
+        "knn-l2-sq" => run_knn_l2_sq(&args),
         _ => Err(format!("unknown command: {command}")),
     }
 }
@@ -78,6 +85,76 @@ fn run_nearest_l2_sq(args: &[String]) -> Result<String, String> {
     Ok(format!("{index}:{distance}"))
 }
 
+fn run_l2_sq_all(args: &[String]) -> Result<String, String> {
+    let (query, candidates) = parse_query_and_candidates(args, "l2-sq-all")?;
+    let candidate_refs: Vec<&[f32]> = candidates.iter().map(Vec::as_slice).collect();
+    let distances = l2_sq_all_f32(&query, &candidate_refs).map_err(|error| error.to_string())?;
+
+    Ok(format_vector(&distances))
+}
+
+fn run_nearest_k_l2_sq(args: &[String]) -> Result<String, String> {
+    if args.len() != 4 {
+        return Err("nearest-k-l2-sq expects query, candidates, and k".to_string());
+    }
+
+    let query = parse_vector(&args[1])?;
+    let candidates = parse_vector_set(&args[2])?;
+    let k = parse_usize(&args[3], "k")?;
+    let candidate_refs: Vec<&[f32]> = candidates.iter().map(Vec::as_slice).collect();
+    let neighbors =
+        nearest_k_l2_sq_f32(&query, &candidate_refs, k).map_err(|error| error.to_string())?;
+
+    Ok(format_index_scores(&neighbors))
+}
+
+fn run_cosine_all(args: &[String]) -> Result<String, String> {
+    let (query, candidates) = parse_query_and_candidates(args, "cosine-all")?;
+    let candidate_refs: Vec<&[f32]> = candidates.iter().map(Vec::as_slice).collect();
+    let similarities =
+        cosine_similarity_all_f32(&query, &candidate_refs).map_err(|error| error.to_string())?;
+
+    Ok(format_vector(&similarities))
+}
+
+fn run_nearest_cosine(args: &[String]) -> Result<String, String> {
+    let (query, candidates) = parse_query_and_candidates(args, "nearest-cosine")?;
+    let candidate_refs: Vec<&[f32]> = candidates.iter().map(Vec::as_slice).collect();
+    let (index, similarity) = nearest_cosine_similarity_f32(&query, &candidate_refs)
+        .map_err(|error| error.to_string())?;
+
+    Ok(format!("{index}:{similarity}"))
+}
+
+fn run_knn_l2_sq(args: &[String]) -> Result<String, String> {
+    if args.len() != 5 {
+        return Err("knn-l2-sq expects query, samples, labels, and k".to_string());
+    }
+
+    let query = parse_vector(&args[1])?;
+    let samples = parse_vector_set(&args[2])?;
+    let labels = parse_labels(&args[3])?;
+    let k = parse_usize(&args[4], "k")?;
+    let sample_refs: Vec<&[f32]> = samples.iter().map(Vec::as_slice).collect();
+    let label = knn_predict_l2_sq_u32(&query, &sample_refs, &labels, k)
+        .map_err(|error| error.to_string())?;
+
+    Ok(format!("{label}"))
+}
+
+fn parse_query_and_candidates(
+    args: &[String],
+    command: &str,
+) -> Result<(Vec<f32>, Vec<Vec<f32>>), String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "{command} expects a query vector and candidate set"
+        ));
+    }
+
+    Ok((parse_vector(&args[1])?, parse_vector_set(&args[2])?))
+}
+
 fn parse_binary_vectors(args: &[String]) -> Result<(Vec<f32>, Vec<f32>), String> {
     if args.len() != 3 {
         return Err("binary kernels expect exactly 2 vector arguments".to_string());
@@ -124,10 +201,43 @@ fn parse_vector_set(input: &str) -> Result<Vec<Vec<f32>>, String> {
     input.split(';').map(parse_vector).collect()
 }
 
+fn parse_labels(input: &str) -> Result<Vec<u32>, String> {
+    if input.trim().is_empty() {
+        return Err("labels must not be empty".to_string());
+    }
+
+    input
+        .split(',')
+        .map(|part| {
+            let value = part.trim();
+            if value.is_empty() {
+                return Err(format!("invalid label in '{input}'"));
+            }
+            value
+                .parse::<u32>()
+                .map_err(|_| format!("invalid u32 label: {value}"))
+        })
+        .collect()
+}
+
+fn parse_usize(input: &str, name: &str) -> Result<usize, String> {
+    input
+        .parse::<usize>()
+        .map_err(|_| format!("invalid {name}: {input}"))
+}
+
 fn format_vector(values: &[f32]) -> String {
     values
         .iter()
         .map(|value| format!("{value}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn format_index_scores(values: &[(usize, f32)]) -> String {
+    values
+        .iter()
+        .map(|(index, score)| format!("{index}:{score}"))
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -139,7 +249,12 @@ fn usage() -> &'static str {
   cargo run -p cli -- cosine <a,b,c> <x,y,z>
   cargo run -p cli -- norm <a,b,c>
   cargo run -p cli -- normalize <a,b,c>
-  cargo run -p cli -- nearest-l2-sq <query> <candidate;candidate>"
+  cargo run -p cli -- l2-sq-all <query> <candidate;candidate>
+  cargo run -p cli -- nearest-l2-sq <query> <candidate;candidate>
+  cargo run -p cli -- nearest-k-l2-sq <query> <candidate;candidate> <k>
+  cargo run -p cli -- cosine-all <query> <candidate;candidate>
+  cargo run -p cli -- nearest-cosine <query> <candidate;candidate>
+  cargo run -p cli -- knn-l2-sq <query> <sample;sample> <label,label> <k>"
 }
 
 #[cfg(test)]
@@ -230,5 +345,63 @@ mod tests {
         ]);
 
         assert_eq!(got, Ok("1:1".to_string()));
+    }
+
+    #[test]
+    fn l2_sq_all_command_returns_distances() {
+        let got = run(vec![
+            "l2-sq-all".to_string(),
+            "1,1".to_string(),
+            "1,1;2,1;3,3".to_string(),
+        ]);
+
+        assert_eq!(got, Ok("0,1,8".to_string()));
+    }
+
+    #[test]
+    fn nearest_k_l2_sq_command_returns_neighbors() {
+        let got = run(vec![
+            "nearest-k-l2-sq".to_string(),
+            "1,1".to_string(),
+            "5,5;2,1;1,1;0,0".to_string(),
+            "3".to_string(),
+        ]);
+
+        assert_eq!(got, Ok("2:0,1:1,3:2".to_string()));
+    }
+
+    #[test]
+    fn cosine_all_command_returns_similarities() {
+        let got = run(vec![
+            "cosine-all".to_string(),
+            "1,0".to_string(),
+            "1,0;0,1;-1,0".to_string(),
+        ]);
+
+        assert_eq!(got, Ok("1,0,-1".to_string()));
+    }
+
+    #[test]
+    fn nearest_cosine_command_returns_best_similarity() {
+        let got = run(vec![
+            "nearest-cosine".to_string(),
+            "1,0".to_string(),
+            "0,1;1,0;-1,0".to_string(),
+        ]);
+
+        assert_eq!(got, Ok("1:1".to_string()));
+    }
+
+    #[test]
+    fn knn_l2_sq_command_returns_predicted_label() {
+        let got = run(vec![
+            "knn-l2-sq".to_string(),
+            "1,1".to_string(),
+            "1,1;1.2,1.1;8,8;7.5,8".to_string(),
+            "10,10,20,20".to_string(),
+            "3".to_string(),
+        ]);
+
+        assert_eq!(got, Ok("10".to_string()));
     }
 }
